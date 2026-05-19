@@ -400,17 +400,18 @@ mod detail {
     /// Extracts the version from the installed kernel image path and
     /// the version string from /proc/version.
     ///
-    /// ARM64 kernels have no x86 real-mode header, so the version cannot
-    /// be read from a fixed offset. Instead, extract the release from
-    /// the image filename and parse /proc/version for the full string.
-    #[cfg(target_arch = "aarch64")]
+    /// ARM64 and LoongArch64 kernels have no x86 real-mode header, so
+    /// the version cannot be read from a fixed offset. Instead, extract
+    /// the release from the image filename and parse /proc/version for
+    /// the full string.
+    #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
     fn gather_kernel_version(
         run_cmd: &dyn Fn(&[&str]) -> Result<String>,
         _open_file: &dyn Fn(&str) -> Result<File>,
     ) -> Result<KernelVersionInformation> {
         let image_path = find_kernel_image_path(run_cmd)?;
         let proc_version = fs::read_to_string("/proc/version").unwrap_or_default();
-        let (release, version) = parse_kernel_version_arm64(&image_path, &proc_version)?;
+        let (release, version) = parse_kernel_version_non_amd64(&image_path, &proc_version)?;
 
         Ok(KernelVersionInformation {
             machine: std::env::consts::ARCH.to_owned(),
@@ -420,12 +421,15 @@ mod detail {
         })
     }
 
-    /// Splits an arm64 kernel image path and `/proc/version` contents into the release and
-    /// version parts, e.g. "/boot/vmlinuz-6.17.2-1-pve" and
+    /// Splits an non-amd64 kernel image path and `/proc/version` contents into the release
+    /// and version parts, e.g. "/boot/vmlinuz-6.17.2-1-pve" and
     /// "Linux version 6.17.2-1-pve (build@proxmox) #1 SMP ..." into "6.17.2-1-pve" and
     /// "6.17.2-1-pve (build@proxmox) #1 SMP ...".
-    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
-    fn parse_kernel_version_arm64(
+    #[cfg_attr(
+        not(any(target_arch = "aarch64", target_arch = "loongarch64")),
+        allow(dead_code)
+    )]
+    fn parse_kernel_version_non_amd64(
         image_path: &str,
         proc_version: &str,
     ) -> Result<(String, String)> {
@@ -530,21 +534,23 @@ mod detail {
                 Some((key, _)) if key.trim() == "processor" => {
                     result.cpus += 1;
                 }
-                // x86: "core id", ARM64: not present
-                Some((key, value)) if key.trim() == "core id" => {
+                // x86: "core id", ARM64: not present, LoongArch64: "core"
+                Some((key, value)) if key.trim() == "core id" || key.trim() == "core" => {
                     cores.insert(value);
                 }
-                // x86: "physical id", ARM64: not present
-                Some((key, value)) if key.trim() == "physical id" => {
+                // x86: "physical id", ARM64: not present, LoongArch64: "package"
+                Some((key, value)) if key.trim() == "physical id" || key.trim() == "package" => {
                     sockets.insert(value);
                 }
-                // x86: "flags", ARM64: "Features"
+                // x86: "flags", ARM64: "Features", LoongArch64: "Features"
                 Some((key, value)) if key.trim() == "flags" || key.trim() == "Features" => {
                     value.trim().clone_into(&mut result.flags);
                 }
-                // x86: "model name", ARM64: "CPU implementer"
+                // x86: "model name", ARM64: "CPU implementer", LoongArch64: "Model Name"
                 Some((key, value))
-                    if (key.trim() == "model name" || key.trim() == "CPU implementer")
+                    if (key.trim() == "model name"
+                        || key.trim() == "CPU implementer"
+                        || key.trim() == "Model Name")
                         && result.model.is_empty() =>
                 {
                     value.trim().clone_into(&mut result.model);
@@ -573,7 +579,7 @@ mod detail {
     mod tests {
         use super::{
             find_kernel_image_path, find_kernel_package_name, parse_cpu_info,
-            parse_kernel_version_arm64,
+            parse_kernel_version_non_amd64,
         };
 
         #[test]
@@ -798,7 +804,7 @@ ii |amd64|proxmox-kernel-6.8.8-2-pve-signed
 
         #[test]
         fn parses_arm64_kernel_version() {
-            let (release, version) = parse_kernel_version_arm64(
+            let (release, version) = parse_kernel_version_non_amd64(
                 "/boot/vmlinuz-6.17.2-1-pve",
                 "Linux version 6.17.2-1-pve (build@proxmox) #1 SMP PREEMPT_DYNAMIC PMX 6.17.2-1 (2025-11-06T10:12Z) aarch64 GNU/Linux\n",
             )
@@ -811,7 +817,27 @@ ii |amd64|proxmox-kernel-6.8.8-2-pve-signed
             );
 
             assert!(
-                parse_kernel_version_arm64("/boot/Image-6.17.2-1-pve", "").is_err(),
+                parse_kernel_version_non_amd64("/boot/Image-6.17.2-1-pve", "").is_err(),
+                "unexpected image path format must be rejected"
+            );
+        }
+
+        #[test]
+        fn parses_loongarch64_kernel_version() {
+            let (release, version) = parse_kernel_version_non_amd64(
+                "/boot/vmlinuz-7.0.14-8-pve",
+                "Linux version 7.0.14-8-pve (sbuild@sbuild) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC PMX 7.0.14-8 (2026-07-28T10:28Z)\n",
+            )
+            .unwrap();
+
+            assert_eq!(release, "7.0.14-8-pve");
+            assert_eq!(
+                version,
+                "7.0.14-8-pve (sbuild@sbuild) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC PMX 7.0.14-8 (2026-07-28T10:28Z)"
+            );
+
+            assert!(
+                parse_kernel_version_non_amd64("/boot/Image-6.17.2-1-pve", "").is_err(),
                 "unexpected image path format must be rejected"
             );
         }
@@ -872,6 +898,53 @@ CPU revision	: 0
             assert_eq!(
                 info.flags,
                 "fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid"
+            );
+        }
+
+        #[test]
+        fn parses_loongarch64_cpu_info() {
+            let cpuinfo = r#"processor               : 0
+package                 : 0
+core                    : 0
+global_id               : 0
+CPU Family              : Loongson-64bit
+Model Name              : Loongson-3C6000/S
+PRID                    : LA664 (0014d010)
+CPU Revision            : 0x10
+FPU Revision            : 0x01
+CPU MHz                 : 2200.00
+BogoMIPS                : 4400.00
+TLB Entries             : 2112
+Address Sizes           : 48 bits physical, 48 bits virtual
+ISA                     : loongarch32r loongarch32s loongarch64
+Features                : cpucfg lam scq ual fpu lsx lasx crc32 complex crypto lspw lvz lbt_x86 lbt_arm lbt_mips
+Hardware Watchpoint     : yes, iwatch count: 8, dwatch count: 4
+processor               : 1
+package                 : 0
+core                    : 1
+global_id               : 1
+CPU Family              : Loongson-64bit
+Model Name              : Loongson-3C6000/S
+PRID                    : LA664 (0014d010)
+CPU Revision            : 0x10
+FPU Revision            : 0x01
+CPU MHz                 : 2200.00
+BogoMIPS                : 4400.00
+TLB Entries             : 2112
+Address Sizes           : 48 bits physical, 48 bits virtual
+ISA                     : loongarch32r loongarch32s loongarch64
+Features                : cpucfg lam scq ual fpu lsx lasx crc32 complex crypto lspw lvz lbt_x86 lbt_arm lbt_mips
+Hardware Watchpoint     : yes, iwatch count: 8, dwatch count: 4
+"#;
+
+            let info = parse_cpu_info(cpuinfo, true);
+            assert_eq!(info.cpus, 2);
+            assert_eq!(info.cores, 2);
+            assert_eq!(info.sockets, 1);
+            assert_eq!(info.model, "Loongson-3C6000/S");
+            assert_eq!(
+                info.flags,
+                "cpucfg lam scq ual fpu lsx lasx crc32 complex crypto lspw lvz lbt_x86 lbt_arm lbt_mips"
             );
         }
     }
