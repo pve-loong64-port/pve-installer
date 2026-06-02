@@ -280,9 +280,9 @@ sub partition_bootable_disk {
 
     my $blocksize = logical_blocksize($target_dev);
 
-    # BIOS boot partition is x86-only, arm64 is EFI-only
+    # BIOS boot partition is x86-only, arm64 and loong64 are EFI-only
     my $run_env = Proxmox::Install::RunEnv::get();
-    if ($blocksize != 4096 && $run_env->{arch} ne 'arm64') {
+    if ($blocksize != 4096 && $run_env->{arch} ne 'arm64' && $run_env->{arch} ne 'loong64') {
         $pnum = 1;
         $pcmd = ['sgdisk', '-a1', "-n$pnum:34:2047", "-t$pnum:EF02", $target_dev];
 
