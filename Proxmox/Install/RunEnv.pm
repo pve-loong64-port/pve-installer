@@ -62,6 +62,18 @@ sub query_cpu_info : prototype() {
         # virtualization support instead
         $cpu_info->{hvm_supported} = -e '/dev/kvm' ? 1 : 0;
         $cpu_info->{vendor_id} = 'ARM';
+    } elsif ($arch eq 'loong64') {
+        # LoongArch indicates virtualization support through LVZ CPU extension
+        open(my $CPUINFO_FD, '<', '/proc/cpuinfo');
+        while (my $line = <$CPUINFO_FD>) {
+            if ($line =~ /^Features\s*:.*(lvz)/m) {
+                $cpu_info->{hvm_supported} = 1;
+            } elsif ($line eq "") {
+                last;
+            }
+        }
+        $cpu_info->{vendor_id} = 'Loongson';
+        close($CPUINFO_FD);
     } else {
         open(my $CPUINFO_FD, '<', '/proc/cpuinfo');
         while (my $line = <$CPUINFO_FD>) {

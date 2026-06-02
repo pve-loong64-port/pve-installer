@@ -647,7 +647,10 @@ sub prepare_grub_efi_boot_esp {
 
     eval {
         my $run_env = Proxmox::Install::RunEnv::get();
-        my $grub_target = $run_env->{arch} eq 'arm64' ? 'arm64-efi' : 'x86_64-efi';
+        my $grub_target =
+            $run_env->{arch} eq 'arm64' ? 'arm64-efi'
+            : $run_env->{arch} eq 'loong64' ? 'loongarch64-efi'
+            : 'x86_64-efi';
 
         my $rc = syscmd(
             "chroot $targetdir /usr/sbin/grub-install --target $grub_target --no-floppy --bootloader-id='proxmox' $dev"
@@ -666,13 +669,17 @@ sub prepare_grub_efi_boot_esp {
             || die "unable to copy efi boot loader\n";
 
         my ($shim_src, $boot_dst) =
-            $run_env->{arch} eq 'arm64'
-            ? ('shimaa64.efi', 'BOOTAA64.efi')
+            $run_env->{arch} eq 'arm64' ? ('shimaa64.efi', 'BOOTAA64.efi')
+            : $run_env->{arch} eq 'loong64' ? ('shimloongarch64.efi', 'BOOTLOONGARCH64.EFI')
             : ('shimx64.efi', 'BOOTx64.efi');
         if (!-e "$targetdir/boot/efi/EFI/BOOT/$shim_src") {
-            # without a shim package installed (no signed shim exists for arm64 yet) grub-install
-            # deploys only the plain grub image, so use that as the removable-media default loader
-            $shim_src = $run_env->{arch} eq 'arm64' ? 'grubaa64.efi' : 'grubx64.efi';
+            # without a shim package installed (no signed shim exists for arm64 and loong64 yet)
+            # grub-install deploys only the plain grub image, so use that as the removable-media
+            # default loader
+            $shim_src =
+                $run_env->{arch} eq 'arm64' ? 'grubaa64.efi'
+                : $run_env->{arch} eq 'loong64' ? 'grubloongarch64.efi'
+                : 'grubx64.efi';
             warn "no shim binary found, using '$shim_src' as removable-media default boot loader\n";
         }
         syscmd(
@@ -1338,11 +1345,14 @@ sub extract_data {
         my $xkmap = $iso_env->{locales}->{kmap}->{$keymap}->{x11} // 'us';
 
         my $grub_debconfig = '';
-        if ($run_env->{arch} ne 'arm64') {
+        if ($run_env->{arch} ne 'arm64' && $run_env->{arch} ne 'loong64') {
             $grub_debconfig .=
                 "grub-pc grub-pc/install_devices select $grub_install_devices_txt\n";
         }
-        my $grub_efi_pkg = $run_env->{arch} eq 'arm64' ? 'grub-efi-arm64' : 'grub-efi-amd64';
+        my $grub_efi_pkg =
+            $run_env->{arch} eq 'arm64' ? 'grub-efi-arm64'
+            : $run_env->{arch} eq 'loong64' ? 'grub-efi-loong64'
+            : 'grub-efi-amd64';
         $grub_debconfig .= "$grub_efi_pkg grub2/force_efi_extra_removable boolean true\n";
 
         debconfig_set($targetdir, <<_EOD);
@@ -1370,13 +1380,17 @@ _EOD
 
             # the grub-pc/grub-efi packages (w/o -bin) are the ones actually updating
             # grub upon upgrade - and conflict with each other - install the fitting one
-            # only; arm64 is EFI-only and never has grub-pc
+            # only; arm64 and loong64 are EFI-only and never have grub-pc
             next
                 if $deb =~ /grub-pc_/
-                && ($run_env->{boot_type} ne 'bios' || $run_env->{arch} eq 'arm64');
+                && ($run_env->{boot_type} ne 'bios'
+                    || $run_env->{arch} eq 'arm64'
+                    || $run_env->{arch} eq 'loong64');
             next if $deb =~ /grub-efi-amd64_/ && $run_env->{arch} ne 'amd64';
             next if $deb =~ /grub-efi-arm64_/ && $run_env->{arch} ne 'arm64';
-            next if $deb =~ /grub-efi-(?:amd64|arm64)_/ && $run_env->{boot_type} ne 'efi';
+            next if $deb =~ /grub-efi-loong64_/ && $run_env->{arch} ne 'loong64';
+            next
+                if $deb =~ /grub-efi-(?:amd64|arm64|loong64)_/ && $run_env->{boot_type} ne 'efi';
             next if ($deb =~ /^proxmox-grub/ && $run_env->{boot_type} ne 'efi');
             next if ($deb =~ /^proxmox-secure-boot-support_/ && !$run_env->{secure_boot});
             next if $deb =~ /^proxmox-first-boot/ && !needs_first_boot_package();
@@ -1571,8 +1585,12 @@ _EOD
                             $run_env->{secure_boot},
                         );
                     } else {
-                        # BIOS boot via i386-pc is x86-only, arm64 is EFI-only
-                        if (!$native_4k_disk_bootable && $run_env->{arch} ne 'arm64') {
+                        # BIOS boot via i386-pc is x86-only, arm64 and loong64 are EFI-only
+                        if (
+                            !$native_4k_disk_bootable
+                            && $run_env->{arch} ne 'arm64'
+                            && $run_env->{arch} ne 'loong64'
+                        ) {
                             eval {
                                 syscmd(
                                     "chroot $targetdir /usr/sbin/grub-install --target i386-pc --no-floppy --bootloader-id='proxmox' $dev"
