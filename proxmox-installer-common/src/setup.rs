@@ -293,6 +293,9 @@ where
 
 #[derive(Clone, Deserialize)]
 pub struct RuntimeInfo {
+    /// CPU architecture.
+    pub arch: String,
+
     /// Whether is system was booted in (legacy) BIOS or UEFI mode.
     pub boot_type: BootType,
 
