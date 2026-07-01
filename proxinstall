@@ -1929,8 +1929,14 @@ sub create_intro_view {
             $run_env->{arch} eq 'arm64'
             ? "Check that the firmware boots the kernel in EL2 (hypervisor) mode."
             : "Check BIOS settings for Intel VT / AMD-V / SVM.";
-        Proxmox::UI::error(
-            "No support for hardware-accelerated KVM virtualization detected.\n\n" . $hint);
+        # We have disabled KVM virtualization on loongarch64 with no LVZ
+        # extension, it is unnecessary to show the error message on loongarch64
+        # since loongarch64 does not provide a way to enable/disable
+        # virtualization.
+        if ($run_env->{arch} ne 'loong64') {
+            Proxmox::UI::error(
+                "No support for hardware-accelerated KVM virtualization detected.\n\n" . $hint);
+        }
     }
 
     Proxmox::UI::display_html(
