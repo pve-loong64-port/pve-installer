@@ -1,4 +1,5 @@
 {
+  "arch": "amd64",
   "boot_type": "efi",
   "country": "at",
   "disks": [
