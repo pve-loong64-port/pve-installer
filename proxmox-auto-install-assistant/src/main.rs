@@ -40,6 +40,7 @@ struct CdInfo {
     product_name: String,
     release: String,
     isorelease: String,
+    arch: String,
 }
 
 /// Arguments for the `device-info` command.
@@ -1282,6 +1283,10 @@ struct PxeBootOption {
     description: &'static str,
     /// Extra parameters to append to the kernel commandline
     extra_params: &'static str,
+    /// Append the architecture-specific serial console parameters
+    serial_console: bool,
+    /// Set a fixed VESA framebuffer mode for readable text output, only exists on amd64
+    vga_mode: bool,
 }
 
 const DEFAULT_KERNEL_PARAMS: &str = "ramdisk_size=16777216 rw quiet";
@@ -1290,38 +1295,70 @@ const PXE_BOOT_OPTIONS: &[PxeBootOption] = &[
         id: "auto",
         description: "Automated",
         extra_params: "splash=silent proxmox-start-auto-installer",
+        serial_console: false,
+        vga_mode: false,
     },
     PxeBootOption {
         id: "gui",
         description: "Graphical",
         extra_params: "splash=silent",
+        serial_console: false,
+        vga_mode: false,
     },
     PxeBootOption {
         id: "tui",
         description: "Terminal UI",
-        extra_params: "splash=silent proxmox-tui-mode vga=788",
+        extra_params: "splash=silent proxmox-tui-mode",
+        serial_console: false,
+        vga_mode: true,
     },
     PxeBootOption {
         id: "serial",
         description: "Terminal UI, Serial Console",
-        extra_params: "splash=silent proxmox-tui-mode console=ttyS0,115200",
+        extra_params: "splash=silent proxmox-tui-mode",
+        serial_console: true,
+        vga_mode: false,
     },
     PxeBootOption {
         id: "debug",
         description: "Debug Mode",
-        extra_params: "splash=verbose proxmox-debug vga=788",
+        extra_params: "splash=verbose proxmox-debug",
+        serial_console: false,
+        vga_mode: true,
     },
     PxeBootOption {
         id: "debugtui",
         description: "Terminal UI, Debug Mode",
-        extra_params: "splash=verbose proxmox-debug proxmox-tui-mode vga=788",
+        extra_params: "splash=verbose proxmox-debug proxmox-tui-mode",
+        serial_console: false,
+        vga_mode: true,
     },
     PxeBootOption {
         id: "serialdebug",
         description: "Serial Console, Debug Mode",
-        extra_params: "splash=verbose proxmox-debug proxmox-tui-mode console=ttyS0,115200",
+        extra_params: "splash=verbose proxmox-debug proxmox-tui-mode",
+        serial_console: true,
+        vga_mode: false,
     },
 ];
+
+/// Assembles the extra kernel command line parameters of a boot option for the ISOs target
+/// architecture. `vga=` is VESA BIOS-specific and arm64 platforms may use either a PL011 or a
+/// 16550 UART, so mirror the serial console setup of the arm64 ISO boot menu.
+fn boot_option_params(opt: &PxeBootOption, arch: &str) -> String {
+    let mut params = opt.extra_params.to_owned();
+    if opt.vga_mode && arch != "arm64" {
+        params.push_str(" vga=788");
+    }
+    if opt.serial_console {
+        if arch == "arm64" {
+            params.push_str(" console=ttyAMA0,115200 console=ttyS0,115200");
+        } else {
+            params.push_str(" console=ttyS0,115200");
+        }
+    }
+    params
+}
 
 /// Creates a configuration file for the given PXE bootloader.
 ///
@@ -1364,7 +1401,10 @@ fn create_pxe_config_file(
     goto load
 
 "#,
-                        opt.id, cd_info.product_name, opt.description, opt.extra_params
+                        opt.id,
+                        cd_info.product_name,
+                        opt.description,
+                        boot_option_params(opt, &cd_info.arch)
                     )
                 })
                 .collect::<String>();
@@ -1609,6 +1649,8 @@ fn parse_cd_info(raw_cd_info: &str) -> Result<CdInfo> {
         product_name: "Proxmox VE".into(),
         release: String::new(),
         isorelease: String::new(),
+        // ISOs predating the ARCH key are always amd64
+        arch: "amd64".into(),
     };
 
     for line in raw_cd_info.lines() {
@@ -1616,6 +1658,7 @@ fn parse_cd_info(raw_cd_info: &str) -> Result<CdInfo> {
             Some(("PRODUCTLONG", val)) => info.product_name = val.trim_matches('\'').parse()?,
             Some(("RELEASE", val)) => info.release = val.trim_matches('\'').to_owned(),
             Some(("ISORELEASE", val)) => info.isorelease = val.trim_matches('\'').to_owned(),
+            Some(("ARCH", val)) => info.arch = val.trim_matches('\'').to_owned(),
             Some(_) => {}
             None if line.is_empty() => {}
             _ => bail!("invalid cd-info line: {line}"),
@@ -1627,7 +1670,7 @@ fn parse_cd_info(raw_cd_info: &str) -> Result<CdInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CdInfo, parse_cd_info};
+    use super::{CdInfo, PXE_BOOT_OPTIONS, boot_option_params, parse_cd_info};
     use anyhow::Result;
 
     #[test]
@@ -1646,8 +1689,50 @@ ISONAME='proxmox-ve'
                 product_name: "Proxmox VE".into(),
                 release: "42.1".into(),
                 isorelease: "1".into(),
+                arch: "amd64".into(),
             }
         );
         Ok(())
+    }
+
+    #[test]
+    fn parse_cdinfo_arch() -> Result<()> {
+        let s = r#"
+PRODUCT='pve'
+PRODUCTLONG='Proxmox VE'
+RELEASE='42.1'
+ISORELEASE='ALPHA-1'
+ISONAME='proxmox-ve'
+ARCH='arm64'
+"#;
+
+        assert_eq!(parse_cd_info(s)?.arch, "arm64");
+        Ok(())
+    }
+
+    #[test]
+    fn boot_option_params_per_arch() {
+        let find = |id: &str| PXE_BOOT_OPTIONS.iter().find(|o| o.id == id).unwrap();
+
+        assert_eq!(
+            boot_option_params(find("tui"), "amd64"),
+            "splash=silent proxmox-tui-mode vga=788"
+        );
+        assert_eq!(
+            boot_option_params(find("tui"), "arm64"),
+            "splash=silent proxmox-tui-mode"
+        );
+        assert_eq!(
+            boot_option_params(find("serial"), "amd64"),
+            "splash=silent proxmox-tui-mode console=ttyS0,115200"
+        );
+        assert_eq!(
+            boot_option_params(find("serial"), "arm64"),
+            "splash=silent proxmox-tui-mode console=ttyAMA0,115200 console=ttyS0,115200"
+        );
+        assert_eq!(
+            boot_option_params(find("auto"), "arm64"),
+            "splash=silent proxmox-start-auto-installer"
+        );
     }
 }
