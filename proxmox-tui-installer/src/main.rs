@@ -216,12 +216,16 @@ fn installer_setup_late(siv: &mut Cursive) {
     }
 
     if state.setup_info.config.product == ProxmoxProduct::Pve && !state.runtime_info.hvm_supported {
+        // the installer always runs natively on the target machine, so the compile-time
+        // architecture is authoritative here
+        let hint = if cfg!(target_arch = "aarch64") {
+            "Check that the firmware boots the kernel in EL2 (hypervisor) mode."
+        } else {
+            "Check BIOS settings for Intel VT / AMD-V / SVM."
+        };
         display_setup_warning(
             siv,
-            concat!(
-                "No support for hardware-accelerated KVM virtualization detected.\n\n",
-                "Check BIOS settings for Intel VT / AMD-V / SVM."
-            ),
+            &format!("No support for hardware-accelerated KVM virtualization detected.\n\n{hint}"),
         );
     }
 }

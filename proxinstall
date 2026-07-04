@@ -1925,9 +1925,12 @@ sub create_intro_view {
     }
 
     if ($iso_env->{product} eq 'pve' && !$run_env->{hvm_supported}) {
+        my $hint =
+            $run_env->{arch} eq 'arm64'
+            ? "Check that the firmware boots the kernel in EL2 (hypervisor) mode."
+            : "Check BIOS settings for Intel VT / AMD-V / SVM.";
         Proxmox::UI::error(
-            "No support for hardware-accelerated KVM virtualization detected.\n\n"
-                . "Check BIOS settings for Intel VT / AMD-V / SVM.");
+            "No support for hardware-accelerated KVM virtualization detected.\n\n" . $hint);
     }
 
     Proxmox::UI::display_html(
