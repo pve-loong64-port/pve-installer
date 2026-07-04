@@ -409,20 +409,8 @@ mod detail {
         _open_file: &dyn Fn(&str) -> Result<File>,
     ) -> Result<KernelVersionInformation> {
         let image_path = find_kernel_image_path(run_cmd)?;
-
-        let release = image_path
-            .strip_prefix("/boot/vmlinuz-")
-            .context("unexpected kernel image path format")?
-            .to_owned();
-
-        // Try to get the full version string from /proc/version
-        let version = fs::read_to_string("/proc/version")
-            .map(|v| {
-                // /proc/version: "Linux version 6.17.2-1-pve (...) #1 SMP ..."
-                // extract everything after the second space
-                v.splitn(3, ' ').nth(2).unwrap_or("").trim().to_owned()
-            })
-            .unwrap_or_default();
+        let proc_version = fs::read_to_string("/proc/version").unwrap_or_default();
+        let (release, version) = parse_kernel_version_arm64(&image_path, &proc_version)?;
 
         Ok(KernelVersionInformation {
             machine: std::env::consts::ARCH.to_owned(),
@@ -430,6 +418,30 @@ mod detail {
             release,
             version,
         })
+    }
+
+    /// Splits an arm64 kernel image path and `/proc/version` contents into the release and
+    /// version parts, e.g. "/boot/vmlinuz-6.17.2-1-pve" and
+    /// "Linux version 6.17.2-1-pve (build@proxmox) #1 SMP ..." into "6.17.2-1-pve" and
+    /// "6.17.2-1-pve (build@proxmox) #1 SMP ...".
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    fn parse_kernel_version_arm64(
+        image_path: &str,
+        proc_version: &str,
+    ) -> Result<(String, String)> {
+        let release = image_path
+            .strip_prefix("/boot/vmlinuz-")
+            .context("unexpected kernel image path format")?
+            .to_owned();
+
+        let version = proc_version
+            .splitn(3, ' ')
+            .nth(2)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+
+        Ok((release, version))
     }
 
     /// Retrieves the absolute path to the kernel image (aka. `/boot/vmlinuz-<version>`)
@@ -496,18 +508,23 @@ mod detail {
     ///
     /// * `run_env` - Runtime envirornment information gathered by the installer at the start
     fn gather_cpu_info(run_env: &RuntimeInfo) -> Result<CpuInfo> {
+        let cpuinfo = fs::read_to_string("/proc/cpuinfo")?;
+        Ok(parse_cpu_info(&cpuinfo, run_env.hvm_supported))
+    }
+
+    /// Parses `/proc/cpuinfo` contents, handling both the x86 and the ARM64 format.
+    fn parse_cpu_info(cpuinfo: &str, hvm_supported: bool) -> CpuInfo {
         let mut result = CpuInfo {
             cores: 0,
             cpus: 0,
             flags: String::new(),
-            hvm: run_env.hvm_supported,
+            hvm: hvm_supported,
             model: String::new(),
             sockets: 0,
         };
         let mut sockets = HashSet::new();
         let mut cores = HashSet::new();
 
-        let cpuinfo = fs::read_to_string("/proc/cpuinfo")?;
         for line in cpuinfo.lines() {
             match line.split_once(':') {
                 Some((key, _)) if key.trim() == "processor" => {
@@ -536,21 +553,28 @@ mod detail {
             }
         }
 
-        result.cores = cores.len();
-        // ARM64 has no physical id, assume 1 socket if we found
-        // CPUs but no socket info
+        // ARM64 has neither core id nor physical id; there each processor entry is a core, so
+        // fall back to the processor count and a single socket
+        result.cores = if cores.is_empty() && result.cpus > 0 {
+            result.cpus
+        } else {
+            cores.len()
+        };
         result.sockets = if sockets.is_empty() && result.cpus > 0 {
             1
         } else {
             sockets.len()
         };
 
-        Ok(result)
+        result
     }
 
     #[cfg(test)]
     mod tests {
-        use super::{find_kernel_image_path, find_kernel_package_name};
+        use super::{
+            find_kernel_image_path, find_kernel_package_name, parse_cpu_info,
+            parse_kernel_version_arm64,
+        };
 
         #[test]
         fn finds_correct_kernel_package_name() {
@@ -769,6 +793,85 @@ ii |amd64|proxmox-kernel-6.8.8-2-pve-signed
             assert_eq!(
                 find_kernel_image_path(&mocked_run_cmd).unwrap(),
                 "/boot/vmlinuz-6.8.8-2-pve"
+            );
+        }
+
+        #[test]
+        fn parses_arm64_kernel_version() {
+            let (release, version) = parse_kernel_version_arm64(
+                "/boot/vmlinuz-6.17.2-1-pve",
+                "Linux version 6.17.2-1-pve (build@proxmox) #1 SMP PREEMPT_DYNAMIC PMX 6.17.2-1 (2025-11-06T10:12Z) aarch64 GNU/Linux\n",
+            )
+            .unwrap();
+
+            assert_eq!(release, "6.17.2-1-pve");
+            assert_eq!(
+                version,
+                "6.17.2-1-pve (build@proxmox) #1 SMP PREEMPT_DYNAMIC PMX 6.17.2-1 (2025-11-06T10:12Z) aarch64 GNU/Linux"
+            );
+
+            assert!(
+                parse_kernel_version_arm64("/boot/Image-6.17.2-1-pve", "").is_err(),
+                "unexpected image path format must be rejected"
+            );
+        }
+
+        #[test]
+        fn parses_x86_cpu_info() {
+            let cpuinfo = r#"processor	: 0
+vendor_id	: GenuineIntel
+model name	: Intel(R) Xeon(R) CPU E5-2620 v4 @ 2.10GHz
+physical id	: 0
+core id		: 0
+flags		: fpu vme de pse tsc msr pae mce
+processor	: 1
+vendor_id	: GenuineIntel
+model name	: Intel(R) Xeon(R) CPU E5-2620 v4 @ 2.10GHz
+physical id	: 0
+core id		: 1
+flags		: fpu vme de pse tsc msr pae mce
+"#;
+
+            let info = parse_cpu_info(cpuinfo, true);
+            assert_eq!(info.cpus, 2);
+            assert_eq!(info.cores, 2);
+            assert_eq!(info.sockets, 1);
+            assert_eq!(info.model, "Intel(R) Xeon(R) CPU E5-2620 v4 @ 2.10GHz");
+            assert_eq!(info.flags, "fpu vme de pse tsc msr pae mce");
+            assert!(info.hvm);
+        }
+
+        #[test]
+        fn parses_arm64_cpu_info() {
+            let cpuinfo = r#"processor	: 0
+BogoMIPS	: 2000.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x0
+CPU part	: 0xd4f
+CPU revision	: 0
+processor	: 1
+BogoMIPS	: 2000.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x0
+CPU part	: 0xd4f
+CPU revision	: 0
+"#;
+
+            let info = parse_cpu_info(cpuinfo, true);
+            assert_eq!(info.cpus, 2);
+            assert_eq!(info.cores, 2, "each ARM64 processor entry counts as a core");
+            assert_eq!(
+                info.sockets, 1,
+                "ARM64 has no physical id, assume one socket"
+            );
+            assert_eq!(info.model, "0x41");
+            assert_eq!(
+                info.flags,
+                "fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid"
             );
         }
     }
