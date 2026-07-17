@@ -1012,12 +1012,12 @@ sub extract_data {
         }
 
         if ($swapfile) {
-            update_progress(0.04, 0, $maxper, "create swap space");
+            update_progress(0, 0.04, $maxper, "create swap space");
             syscmd("mkswap -f $swapfile") == 0
                 || die "unable to create swap space\n";
         }
 
-        update_progress(0.045, 0, $maxper, "creating root filesystems");
+        update_progress(0, 0.045, $maxper, "creating root filesystems");
 
         foreach my $di (@$bootdevinfo) {
             next if !$di->{esp};
