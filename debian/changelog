@@ -1,3 +1,35 @@
+proxmox-installer (9.2.8) trixie; urgency=medium
+
+  * gtk ui: autofill the gateway and matching DNS server from the default
+    route of the newly selected management interface, so the suggested values
+    describe the route the kernel actually uses on that interface. The gateway
+    was previously prefilled only once from the first default route found, so
+    with several router-advertisement-received default routes on different
+    interfaces the shown gateway could belong to a different interface and get
+    written as a static route the kernel never received there.
+
+  * gtk ui: set up a proper RGBA visual for the main window, fixing broken
+    compositing of dialogs and other widgets overlaying the WebKit view, such
+    as a gray rectangle left behind after closing the disk setup dialog, at
+    the source instead of working around individual instances.
+
+  * install: fix the reported progress percentage when creating the root and
+    swap volumes, which could jump backwards during the run.
+
+  * refine the experimental arm64 support to a more stable experience:
+    - install: fall back to the plain grub EFI image as the removable-media
+      default boot loader when no shim is installed, as no signed shim
+      exists for arm64 yet; the install previously failed at this step.
+    - proxmox-auto-install-assistant: emit architecture-fitting kernel
+      command line parameters in the generated PXE boot menu, dropping the
+      x86-only VGA mode and selecting the correct serial console on arm64.
+    - post-hook: report the CPU core count correctly on arm64, where it was
+      previously always zero.
+    - show an architecture-fitting hint when no hardware virtualization is
+      detected, instead of pointing at x86 BIOS settings.
+
+ -- Proxmox Support Team <support@proxmox.com>  Sun, 26 Jul 2026 09:14:25 +0200
+
 proxmox-installer (9.2.7) trixie; urgency=medium
 
   * gui: redraw the main window after closing the disk setup dialog, which
