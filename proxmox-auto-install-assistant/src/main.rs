@@ -1347,7 +1347,7 @@ const PXE_BOOT_OPTIONS: &[PxeBootOption] = &[
 /// 16550 UART, so mirror the serial console setup of the arm64 ISO boot menu.
 fn boot_option_params(opt: &PxeBootOption, arch: &str) -> String {
     let mut params = opt.extra_params.to_owned();
-    if opt.vga_mode && arch != "arm64" {
+    if opt.vga_mode && arch != "arm64" && arch != "loong64" {
         params.push_str(" vga=788");
     }
     if opt.serial_console {
