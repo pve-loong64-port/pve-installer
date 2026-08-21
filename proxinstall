@@ -1823,6 +1823,11 @@ sub create_hdsel_view {
                 $target_hds = [$target_hd];
             }
 
+            if ($iso_env->{product} eq 'pve' && grep { m|^/dev/mmcblk\d+$| } @$target_hds) {
+                Proxmox::UI::message(
+                    "Proxmox VE is write intensive, MMC devices may wear out quickly.");
+            }
+
             $step_number++;
             create_country_view();
         },
