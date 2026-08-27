@@ -393,6 +393,15 @@ fn bootdisk_dialog(siv: &mut Cursive) -> InstallerView {
 
             match options {
                 Some(Ok(options)) => {
+                    for disk in &options.disks {
+                        if disk.path.contains("mmcblk") {
+                            display_setup_warning(
+                                siv,
+                                "Proxmox VE is write intensive, MMC devices may wear out quickly.",
+                            );
+                        }
+                    }
+
                     siv.with_user_data(|state: &mut InstallerState| {
                         state.options.bootdisk = options;
                     });
