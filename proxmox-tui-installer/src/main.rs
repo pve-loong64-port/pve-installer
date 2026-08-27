@@ -391,10 +391,31 @@ fn bootdisk_dialog(siv: &mut Cursive) -> InstallerView {
             match options {
                 Some(Ok(options)) => {
                     siv.with_user_data(|state: &mut InstallerState| {
-                        state.options.bootdisk = options;
+                        state.options.bootdisk = options.clone();
                     });
 
-                    switch_to_next_screen(siv, InstallerStep::Timezone, &timezone_dialog);
+                    if options
+                        .disks
+                        .iter()
+                        .fold(false, |acc, disk| acc || disk.path.contains("mmcblk"))
+                    {
+                        siv.add_layer(
+                            Dialog::text(
+                                "Proxmox VE is write intensive, MMC devices may wear out quickly.",
+                            )
+                            .title("Warning")
+                            .button("Ok", |siv| {
+                                siv.pop_layer();
+                                switch_to_next_screen(
+                                    siv,
+                                    InstallerStep::Timezone,
+                                    &timezone_dialog,
+                                );
+                            }),
+                        );
+                    } else {
+                        switch_to_next_screen(siv, InstallerStep::Timezone, &timezone_dialog);
+                    }
                 }
 
                 Some(Err(err)) => siv.add_layer(Dialog::info(format!("Invalid values: {err}"))),
